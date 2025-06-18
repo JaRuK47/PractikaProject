@@ -27,6 +27,202 @@ void admin_menu(sqlite3* db);
 void register_user(sqlite3* db, bool money);
 void input_user(sqlite3* db);
 void delete_user_by_id(sqlite3* db);
+void login_user(sqlite3* db);
+void user_menu(sqlite3* db, int user_id);
+
+void show_balance(sqlite3* db, int user_id) {
+    const char* sql = "SELECT cash FROM users WHERE id = ?;";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, user_id);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            double balance = sqlite3_column_double(stmt, 0);
+            std::cout << "Ваш баланс: " << balance << " руб." << std::endl;
+        }
+
+        sqlite3_finalize(stmt);
+    }
+    else {
+        std::cerr << "Ошибка запроса: " << sqlite3_errmsg(db) << std::endl;
+    }
+
+    system("pause");
+}
+
+void deposit_balance(sqlite3* db, int user_id) {
+    double amount;
+    std::string amount_str;
+
+    while (true) {
+        std::cout << "Введите сумму пополнения: ";
+        std::cin >> amount_str;
+
+        try {
+            amount = std::stod(amount_str);
+            if (amount <= 0) throw std::invalid_argument("negative");
+            break;
+        }
+        catch (...) {
+            std::cout << "Некорректное значение. Попробуйте снова.\n";
+        }
+    }
+
+    const char* getBalanceSQL = "SELECT cash FROM users WHERE id = ?;";
+    sqlite3_stmt* getStmt;
+    if (sqlite3_prepare_v2(db, getBalanceSQL, -1, &getStmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(getStmt, 1, user_id);
+
+        if (sqlite3_step(getStmt) == SQLITE_ROW) {
+            double current_cash = sqlite3_column_double(getStmt, 0);
+            sqlite3_finalize(getStmt);
+
+            double new_cash = current_cash + amount;
+
+            const char* updateSQL = "UPDATE users SET cash = ? WHERE id = ?;";
+            sqlite3_stmt* updateStmt;
+            if (sqlite3_prepare_v2(db, updateSQL, -1, &updateStmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_double(updateStmt, 1, new_cash);
+                sqlite3_bind_int(updateStmt, 2, user_id);
+
+                if (sqlite3_step(updateStmt) == SQLITE_DONE) {
+                    std::cout << "Баланс успешно пополнен на " << amount << " руб." << std::endl;
+                }
+                else {
+                    std::cerr << "Ошибка при обновлении баланса: " << sqlite3_errmsg(db) << std::endl;
+                }
+                sqlite3_finalize(updateStmt);
+            }
+        }
+        else {
+            std::cerr << "Ошибка при получении текущего баланса." << std::endl;
+            sqlite3_finalize(getStmt);
+        }
+    }
+    else {
+        std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
+    }
+
+    system("pause");
+}
+
+void transfer_to_user(sqlite3* db, int user_id) {
+    std::string recipient_first_name, recipient_last_name;
+    double amount;
+
+    std::cout << "Введите имя получателя: ";
+    std::cin >> recipient_first_name;
+    std::cout << "Введите фамилию получателя: ";
+    std::cin >> recipient_last_name;
+
+    std::string amount_str;
+
+    while (true) {
+        std::cout << "Введите сумму перевода: ";
+        std::cin >> amount_str;
+
+        try {
+            amount = std::stod(amount_str);
+            if (amount <= 0) throw std::invalid_argument("negative");
+            break;
+        }
+        catch (...) {
+            std::cout << "Некорректная сумма. Попробуйте снова.\n";
+        }
+    }
+
+    double sender_balance = 0.0;
+    sqlite3_stmt* stmt_check_sender;
+    const char* check_sender_sql = "SELECT cash FROM users WHERE id = ?;";
+
+    if (sqlite3_prepare_v2(db, check_sender_sql, -1, &stmt_check_sender, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt_check_sender, 1, user_id);
+        if (sqlite3_step(stmt_check_sender) == SQLITE_ROW) {
+            sender_balance = sqlite3_column_double(stmt_check_sender, 0);
+        }
+        sqlite3_finalize(stmt_check_sender);
+    }
+
+    if (sender_balance < amount) {
+        std::cout << "Недостаточно средств.\n";
+        system("pause");
+        return;
+    }
+
+    int recipient_id = -1;
+    double recipient_balance = 0.0;
+    sqlite3_stmt* stmt_recipient;
+    const char* find_recipient_sql = "SELECT id, cash FROM users WHERE first_name = ? AND last_name = ?;";
+
+    if (sqlite3_prepare_v2(db, find_recipient_sql, -1, &stmt_recipient, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt_recipient, 1, recipient_first_name.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt_recipient, 2, recipient_last_name.c_str(), -1, SQLITE_STATIC);
+
+        if (sqlite3_step(stmt_recipient) == SQLITE_ROW) {
+            recipient_id = sqlite3_column_int(stmt_recipient, 0);
+            recipient_balance = sqlite3_column_double(stmt_recipient, 1);
+        }
+        sqlite3_finalize(stmt_recipient);
+    }
+
+    if (recipient_id == -1) {
+        std::cout << "Пользователь не найден.\n";
+        system("pause");
+        return;
+    }
+
+    sqlite3_stmt* update_sender;
+    const char* update_sender_sql = "UPDATE users SET cash = ? WHERE id = ?;";
+    if (sqlite3_prepare_v2(db, update_sender_sql, -1, &update_sender, nullptr) == SQLITE_OK) {
+        sqlite3_bind_double(update_sender, 1, sender_balance - amount);
+        sqlite3_bind_int(update_sender, 2, user_id);
+        sqlite3_step(update_sender);
+        sqlite3_finalize(update_sender);
+    }
+
+    sqlite3_stmt* update_recipient;
+    const char* update_recipient_sql = "UPDATE users SET cash = ? WHERE id = ?;";
+    if (sqlite3_prepare_v2(db, update_recipient_sql, -1, &update_recipient, nullptr) == SQLITE_OK) {
+        sqlite3_bind_double(update_recipient, 1, recipient_balance + amount);
+        sqlite3_bind_int(update_recipient, 2, recipient_id);
+        sqlite3_step(update_recipient);
+        sqlite3_finalize(update_recipient);
+    }
+
+    std::cout << "Перевод выполнен успешно.\n";
+    system("pause");
+}
+
+void user_menu(sqlite3* db, int user_id) {
+    std::string choice;
+
+    do {
+        system("cls");
+        std::cout << "----- Меню пользователя -----" << std::endl;
+        std::cout << "1 - Показать баланс" << std::endl;
+        std::cout << "2 - Пополнение баланса через банкомат" << std::endl;
+        std::cout << "3 - Перевод пользователю" << std::endl;
+        std::cout << "4 - Выйти" << std::endl;
+        std::cout << ">> ";
+        std::cin >> choice;
+
+        if (choice == "1") {
+            show_balance(db, user_id);
+        }
+        else if (choice == "2") {
+            deposit_balance(db, user_id);
+        }
+        else if (choice == "3") {
+            transfer_to_user(db, user_id);
+        }
+        else if (choice != "4") {
+            std::cout << "Неверный синтаксис, попробуйте еще раз." << std::endl;
+            system("pause");
+        }
+    } while (choice != "4");
+}
+
 
 class User {
 private:
@@ -66,13 +262,52 @@ public:
     }
 };
 
+void login_user(sqlite3* db) {
+    std::string first_name, last_name, password;
+
+    std::cout << "Введите имя: ";
+    std::cin >> first_name;
+
+    std::cout << "Введите фамилию: ";
+    std::cin >> last_name;
+
+    std::cout << "Введите пароль: ";
+    std::cin >> password;
+
+    const char* loginSQL = "SELECT id FROM users WHERE first_name = ? AND last_name = ? AND password = ?;";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, loginSQL, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "Ошибка подготовки запроса входа: " << sqlite3_errmsg(db) << std::endl;
+        return;
+    }
+
+    sqlite3_bind_text(stmt, 1, first_name.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, last_name.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, password.c_str(), -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int user_id = sqlite3_column_int(stmt, 0);
+        std::cout << "Успешный вход! Добро пожаловать, " << first_name << "!" << std::endl;
+        sqlite3_finalize(stmt);
+        system("pause");
+        user_menu(db, user_id);
+    }
+    else {
+        std::cout << "Неверные данные! Попробуйте ещё раз." << std::endl;
+        sqlite3_finalize(stmt);
+    }
+
+    system("pause");
+}
+
 void increase_balance(sqlite3* db) {
     int user_id;
     double amount;
 
     std::cout << "Введите ID пользователя, которому хотите увеличить баланс: ";
     std::cin >> user_id;
-
+  
     std::cout << "Введите сумму увеличения: ";
     std::cin >> amount;
 
@@ -272,7 +507,7 @@ void menu(sqlite3* db) {
         std::cout << "-----------------меню управления-----------------" << std::endl;
         std::cout << "0 - админское управление" << std::endl;
         std::cout << "1 - регистрация нового пользователя" << std::endl;
-        std::cout << "2 - вход в аккаунт (в разработке)" << std::endl;
+        std::cout << "2 - вход в аккаунт" << std::endl;
         std::cout << "3 - выход" << std::endl;
         std::cout << ">> ";
         std::cin >> y;
@@ -289,7 +524,7 @@ void menu(sqlite3* db) {
             register_user(db, false);
         }
         else if (y == "2") {
-            std::cout << "Функция в разработке." << std::endl;
+            login_user(db);
         }
         else if (y != "3") {
             std::cout << "Неверный ввод, попробуйте еще раз." << std::endl;
@@ -326,6 +561,25 @@ int main() {
 
     if (rc != SQLITE_OK) {
         std::cerr << "Ошибка создания таблицы: " << errMsg << std::endl;
+        sqlite3_free(errMsg);
+        sqlite3_close(db);
+        return -1;
+    }
+
+    const char* sqlCreateTransactionsTable =
+        "CREATE TABLE IF NOT EXISTS transactions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "sender_first_name TEXT NOT NULL,"
+        "sender_last_name TEXT NOT NULL,"
+        "recipient_first_name TEXT NOT NULL,"
+        "recipient_last_name TEXT NOT NULL,"
+        "amount FLOAT NOT NULL,"
+        "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ");";
+
+    rc = sqlite3_exec(db, sqlCreateTransactionsTable, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK) {
+        std::cerr << "Ошибка создания таблицы transactions: " << errMsg << std::endl;
         sqlite3_free(errMsg);
         sqlite3_close(db);
         return -1;
