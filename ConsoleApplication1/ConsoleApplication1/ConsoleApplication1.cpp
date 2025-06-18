@@ -30,7 +30,6 @@ private:
 public:
     explicit TransactionManager(sqlite3* database) : db(database) {}
 
-    // Метод для создания таблицы транзакций (вызывать один раз при инициализации)
     bool create_table() {
         const char* sqlCreateTransactionsTable =
             "CREATE TABLE IF NOT EXISTS transactions ("
@@ -52,7 +51,6 @@ public:
         return true;
     }
 
-    // Метод для добавления транзакции
     bool add_transaction(int user_id, const std::string& type, double amount, const std::string& description = "") {
         const char* sql = "INSERT INTO transactions (user_id, type, amount, description) VALUES (?, ?, ?, ?);";
         sqlite3_stmt* stmt;
