@@ -4,23 +4,8 @@
 #include <string>
 #include <windows.h>
 
-std::string utf8_to_cp1251(const char* utf8_str) {
-    if (!utf8_str) return "";
 
-    int wide_len = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, nullptr, 0);
-    if (wide_len == 0) return "";
 
-    std::wstring wide_str(wide_len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, &wide_str[0], wide_len);
-
-    int cp1251_len = WideCharToMultiByte(1251, 0, wide_str.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (cp1251_len == 0) return "";
-
-    std::string cp1251_str(cp1251_len, 0);
-    WideCharToMultiByte(1251, 0, wide_str.c_str(), -1, &cp1251_str[0], cp1251_len, nullptr, nullptr);
-
-    return cp1251_str;
-}
 
 void menu(sqlite3* db);
 void admin_menu(sqlite3* db);
@@ -29,6 +14,203 @@ void input_user(sqlite3* db);
 void delete_user_by_id(sqlite3* db);
 void login_user(sqlite3* db);
 void user_menu(sqlite3* db, int user_id);
+void show_balance(sqlite3* db, int user_id);
+void deposit_balance(sqlite3* db, int user_id);
+void increase_balance(sqlite3* db);
+void transfer_to_user(sqlite3* db, int user_id);
+void display_user_transactions(sqlite3* db, int user_id);
+
+
+
+
+class TransactionManager {
+private:
+    sqlite3* db;
+
+public:
+    explicit TransactionManager(sqlite3* database) : db(database) {}
+
+    // Метод для создания таблицы транзакций (вызывать один раз при инициализации)
+    bool create_table() {
+        const char* sqlCreateTransactionsTable =
+            "CREATE TABLE IF NOT EXISTS transactions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL,"
+            "type TEXT NOT NULL,"
+            "amount FLOAT NOT NULL,"
+            "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "description TEXT,"
+            "FOREIGN KEY(user_id) REFERENCES users(id));";
+
+        char* errMsg = nullptr;
+        int rc = sqlite3_exec(db, sqlCreateTransactionsTable, nullptr, nullptr, &errMsg);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Ошибка создания таблицы транзакций: " << errMsg << std::endl;
+            sqlite3_free(errMsg);
+            return false;
+        }
+        return true;
+    }
+
+    // Метод для добавления транзакции
+    bool add_transaction(int user_id, const std::string& type, double amount, const std::string& description = "") {
+        const char* sql = "INSERT INTO transactions (user_id, type, amount, description) VALUES (?, ?, ?, ?);";
+        sqlite3_stmt* stmt;
+
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << "Ошибка подготовки запроса транзакции: " << sqlite3_errmsg(db) << std::endl;
+            return false;
+        }
+
+        sqlite3_bind_int(stmt, 1, user_id);
+        sqlite3_bind_text(stmt, 2, type.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_double(stmt, 3, amount);
+        sqlite3_bind_text(stmt, 4, description.c_str(), -1, SQLITE_STATIC);
+
+        bool success = true;
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            std::cerr << "Ошибка вставки транзакции: " << sqlite3_errmsg(db) << std::endl;
+            success = false;
+        }
+
+        sqlite3_finalize(stmt);
+        return success;
+    }
+
+    void get_all_transactions() {
+        const char* sqlSelectAllTransactions = "SELECT * FROM transactions;";
+        sqlite3_stmt* stmt;
+
+        int rc = sqlite3_prepare_v2(db, sqlSelectAllTransactions, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
+            return;
+        }
+
+        std::cout << "\n=== Все транзакции ===\n";
+
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            int id = sqlite3_column_int(stmt, 0);
+            int userId = sqlite3_column_int(stmt, 1);
+            const unsigned char* type = sqlite3_column_text(stmt, 2);
+            float amount = static_cast<float>(sqlite3_column_double(stmt, 3));
+            const unsigned char* date = sqlite3_column_text(stmt, 4);
+
+            std::cout << "ID: " << id << ", User ID: " << userId
+                << ", Тип: " << type << ", Сумма: " << amount
+                << ", Дата: " << date << std::endl;
+        }
+
+        if (rc != SQLITE_DONE) {
+            std::cerr << "Ошибка чтения транзакций: " << sqlite3_errmsg(db) << std::endl;
+        }
+
+        sqlite3_finalize(stmt);
+    }
+};
+
+class User {
+private:
+    std::string first_name;
+    std::string last_name;
+    std::string password;
+    float cash;
+
+public:
+    User(const std::string& fname, const std::string& lname, const std::string& pwd, float money)
+        : first_name(fname), last_name(lname), password(pwd), cash(money) {}
+
+    static bool create_table(sqlite3* db) {
+        const char* sqlCreateUsersTable =
+            "CREATE TABLE IF NOT EXISTS users ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "first_name TEXT NOT NULL,"
+            "last_name TEXT NOT NULL,"
+            "password TEXT NOT NULL,"
+            "cash FLOAT);";
+
+        char* errMsg = nullptr;
+        int rc = sqlite3_exec(db, sqlCreateUsersTable, nullptr, nullptr, &errMsg);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Ошибка создания таблицы пользователей: " << errMsg << std::endl;
+            sqlite3_free(errMsg);
+            return false;
+        }
+        return true;
+    }
+
+    bool saveToDB(sqlite3* db) {
+        const char* insertSQL = "INSERT INTO users (first_name, last_name, password, cash) VALUES (?, ?, ?, ?);";
+        sqlite3_stmt* stmt;
+
+        int rc = sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
+            return false;
+        }
+
+        sqlite3_bind_text(stmt, 1, first_name.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, last_name.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, password.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_double(stmt, 4, cash);
+
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) {
+            std::cerr << "Ошибка при вставке: " << sqlite3_errmsg(db) << std::endl;
+            sqlite3_finalize(stmt);
+            return false;
+        }
+
+        sqlite3_finalize(stmt);
+        return true;
+    }
+};
+
+
+
+
+
+void display_user_transactions(sqlite3* db, int user_id) {
+    sqlite3_stmt* stmt;
+    const char* sql =
+        "SELECT t.type, t.amount, t.timestamp, t.description, u.first_name, u.last_name "
+        "FROM transactions t "
+        "JOIN users u ON t.user_id = u.id "
+        "WHERE t.user_id = ? "
+        "ORDER BY t.timestamp DESC";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
+        return;
+    }
+
+    sqlite3_bind_int(stmt, 1, user_id);
+
+    std::cout << "\n--- Ваши транзакции ---\n";
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::string type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        double amount = sqlite3_column_double(stmt, 1);
+        std::string timestamp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* desc = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        const char* first_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        const char* last_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+
+        std::cout << "Пользователь: " << first_name << " " << last_name
+            << " | Тип: " << type
+            << " | Сумма: " << amount
+            << " | Дата: " << timestamp
+            << " | Описание: " << (desc ? desc : "") << std::endl;
+        found = true;
+    }
+
+    if (!found) {
+        std::cout << "У вас пока нет транзакций.\n";
+    }
+
+    sqlite3_finalize(stmt);
+    system("pause");
+}
 
 void show_balance(sqlite3* db, int user_id) {
     const char* sql = "SELECT cash FROM users WHERE id = ?;";
@@ -88,6 +270,8 @@ void deposit_balance(sqlite3* db, int user_id) {
 
                 if (sqlite3_step(updateStmt) == SQLITE_DONE) {
                     std::cout << "Баланс успешно пополнен на " << amount << " руб." << std::endl;
+                    TransactionManager trx(db);
+                    trx.add_transaction(user_id, "deposit", amount, "Пополнение через банкомат");
                 }
                 else {
                     std::cerr << "Ошибка при обновлении баланса: " << sqlite3_errmsg(db) << std::endl;
@@ -133,13 +317,16 @@ void transfer_to_user(sqlite3* db, int user_id) {
     }
 
     double sender_balance = 0.0;
-    sqlite3_stmt* stmt_check_sender;
-    const char* check_sender_sql = "SELECT cash FROM users WHERE id = ?;";
+    std::string sender_first_name, sender_last_name;
 
+    sqlite3_stmt* stmt_check_sender;
+    const char* check_sender_sql = "SELECT cash, first_name, last_name FROM users WHERE id = ?;";
     if (sqlite3_prepare_v2(db, check_sender_sql, -1, &stmt_check_sender, nullptr) == SQLITE_OK) {
         sqlite3_bind_int(stmt_check_sender, 1, user_id);
         if (sqlite3_step(stmt_check_sender) == SQLITE_ROW) {
             sender_balance = sqlite3_column_double(stmt_check_sender, 0);
+            sender_first_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt_check_sender, 1));
+            sender_last_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt_check_sender, 2));
         }
         sqlite3_finalize(stmt_check_sender);
     }
@@ -154,7 +341,6 @@ void transfer_to_user(sqlite3* db, int user_id) {
     double recipient_balance = 0.0;
     sqlite3_stmt* stmt_recipient;
     const char* find_recipient_sql = "SELECT id, cash FROM users WHERE first_name = ? AND last_name = ?;";
-
     if (sqlite3_prepare_v2(db, find_recipient_sql, -1, &stmt_recipient, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt_recipient, 1, recipient_first_name.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt_recipient, 2, recipient_last_name.c_str(), -1, SQLITE_STATIC);
@@ -191,6 +377,13 @@ void transfer_to_user(sqlite3* db, int user_id) {
     }
 
     std::cout << "Перевод выполнен успешно.\n";
+
+    TransactionManager trx(db);
+    trx.add_transaction(user_id, "transfer_out", amount,
+        "Перевод пользователю " + recipient_first_name + " " + recipient_last_name);
+    trx.add_transaction(recipient_id, "transfer_in", amount,
+        "Получение перевода от " + sender_first_name + " " + sender_last_name);
+
     system("pause");
 }
 
@@ -203,7 +396,8 @@ void user_menu(sqlite3* db, int user_id) {
         std::cout << "1 - Показать баланс" << std::endl;
         std::cout << "2 - Пополнение баланса через банкомат" << std::endl;
         std::cout << "3 - Перевод пользователю" << std::endl;
-        std::cout << "4 - Выйти" << std::endl;
+        std::cout << "4 - Показать транзакции" << std::endl;
+        std::cout << "5 - Выйти" << std::endl;
         std::cout << ">> ";
         std::cin >> choice;
 
@@ -216,51 +410,15 @@ void user_menu(sqlite3* db, int user_id) {
         else if (choice == "3") {
             transfer_to_user(db, user_id);
         }
-        else if (choice != "4") {
+        else if (choice == "4") {
+            display_user_transactions(db, user_id);
+        }
+        else if (choice != "5") {
             std::cout << "Неверный синтаксис, попробуйте еще раз." << std::endl;
             system("pause");
         }
-    } while (choice != "4");
+    } while (choice != "5");
 }
-
-
-class User {
-private:
-    std::string first_name;
-    std::string last_name;
-    std::string password;
-    float cash;
-
-public:
-    User(const std::string& fname, const std::string& lname, const std::string& pwd, float money)
-        : first_name(fname), last_name(lname), password(pwd), cash(money) {}
-
-    bool saveToDB(sqlite3* db) {
-        const char* insertSQL = "INSERT INTO users (first_name, last_name, password, cash) VALUES (?, ?, ?, ?);";
-        sqlite3_stmt* stmt;
-
-        int rc = sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nullptr);
-        if (rc != SQLITE_OK) {
-            std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
-            return false;
-        }
-
-        sqlite3_bind_text(stmt, 1, first_name.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 2, last_name.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 3, password.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_double(stmt, 4, cash);
-
-        rc = sqlite3_step(stmt);
-        if (rc != SQLITE_DONE) {
-            std::cerr << "Ошибка при вставке: " << sqlite3_errmsg(db) << std::endl;
-            sqlite3_finalize(stmt);
-            return false;
-        }
-
-        sqlite3_finalize(stmt);
-        return true;
-    }
-};
 
 void login_user(sqlite3* db) {
     std::string first_name, last_name, password;
@@ -340,6 +498,8 @@ void increase_balance(sqlite3* db) {
 
         if (sqlite3_step(updateStmt) == SQLITE_DONE) {
             std::cout << "Баланс успешно обновлён." << std::endl;
+            TransactionManager trx(db);
+            trx.add_transaction(user_id, "admin_increase", amount, "Увеличение баланса администратором");
         }
         else {
             std::cerr << "Ошибка обновления баланса: " << sqlite3_errmsg(db) << std::endl;
@@ -375,7 +535,6 @@ void delete_user_by_id(sqlite3* db) {
         return;
     }
 
-    // Пересоздание таблицы users с переиндексацией ID
     const char* reindexSQL =
         "BEGIN TRANSACTION; "
         "CREATE TABLE IF NOT EXISTS users_temp ("
@@ -411,9 +570,9 @@ void input_user(sqlite3* db) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             int id = sqlite3_column_int(stmt, 0);
 
-            std::string f_name = utf8_to_cp1251(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
-            std::string l_name = utf8_to_cp1251(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)));
-            std::string passw = utf8_to_cp1251(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3)));
+            std::string f_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            std::string l_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            std::string passw = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
 
             double user_cash = sqlite3_column_double(stmt, 4);
 
@@ -465,6 +624,7 @@ void register_user(sqlite3* db, bool money) {
 }
 
 void admin_menu(sqlite3* db) {
+    TransactionManager tm(db);
     std::string y;
     do {
         system("cls");
@@ -473,7 +633,8 @@ void admin_menu(sqlite3* db) {
         std::cout << "1 - увеличение баланса" << std::endl;
         std::cout << "2 - удаление пользователя" << std::endl;
         std::cout << "3 - вывод всех пользователей" << std::endl;
-        std::cout << "4 - назад" << std::endl;
+        std::cout << "4 - Просмотреть все транзакции" << std::endl;
+        std::cout << "5 - назад" << std::endl;
         std::cout << ">> ";
         std::cin >> y;
 
@@ -491,13 +652,16 @@ void admin_menu(sqlite3* db) {
         else if (y == "3") {
             input_user(db);
         }
-        else if (y != "4") {
+        else if (y == "4") {
+            tm.get_all_transactions();
+        }
+        else if (y != "5") {
             std::cout << "Неверный синтаксис, попробуйте еще раз." << std::endl;
         }
 
         system("pause");
         system("cls");
-    } while (y != "4");
+    } while (y != "5");
 }
 
 void menu(sqlite3* db) {
@@ -536,55 +700,29 @@ void menu(sqlite3* db) {
 }
 
 int main() {
-    SetConsoleCP(1251);           // Ввод по-русски
-    SetConsoleOutputCP(1251);     // Вывод по-русски
+    SetConsoleCP(1251);
+    SetConsoleOutputCP(1251);
     setlocale(LC_ALL, "Russian");
 
     sqlite3* db;
-    int exit = sqlite3_open("bankdb.db", &db);
-
-    if (exit != SQLITE_OK) {
-        std::cerr << "Ошибка при открытии базы данных: " << sqlite3_errmsg(db) << std::endl;
-        return -1;
+    int rc = sqlite3_open("bankdb.db", &db);
+    if (rc) {
+        std::cerr << "Невозможно открыть БД: " << sqlite3_errmsg(db) << std::endl;
+        return 1;
     }
 
-    const char* sqlCreateTable =
-        "CREATE TABLE IF NOT EXISTS users ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "first_name TEXT NOT NULL,"
-        "last_name TEXT NOT NULL,"
-        "password TEXT NOT NULL,"
-        "cash FLOAT);";
-
-    char* errMsg;
-    int rc = sqlite3_exec(db, sqlCreateTable, nullptr, nullptr, &errMsg);
-
-    if (rc != SQLITE_OK) {
-        std::cerr << "Ошибка создания таблицы: " << errMsg << std::endl;
-        sqlite3_free(errMsg);
-        sqlite3_close(db);
-        return -1;
+    if (!User::create_table(db)) {
+        std::cerr << "Ошибка инициализации таблицы пользователей\n";
+        return 1;
     }
 
-    const char* sqlCreateTransactionsTable =
-        "CREATE TABLE IF NOT EXISTS transactions ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "sender_first_name TEXT NOT NULL,"
-        "sender_last_name TEXT NOT NULL,"
-        "recipient_first_name TEXT NOT NULL,"
-        "recipient_last_name TEXT NOT NULL,"
-        "amount FLOAT NOT NULL,"
-        "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
-        ");";
-
-    rc = sqlite3_exec(db, sqlCreateTransactionsTable, nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK) {
-        std::cerr << "Ошибка создания таблицы transactions: " << errMsg << std::endl;
-        sqlite3_free(errMsg);
-        sqlite3_close(db);
-        return -1;
+    TransactionManager tm(db);
+    if (!tm.create_table()) {
+        std::cerr << "Ошибка инициализации таблицы транзакций\n";
+        return 1;
     }
 
+    // Запуск меню
     menu(db);
 
     sqlite3_close(db);
