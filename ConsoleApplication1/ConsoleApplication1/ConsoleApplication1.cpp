@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <windows.h>
+#include <algorithm>
 
 
 
@@ -19,6 +20,7 @@ void deposit_balance(sqlite3* db, int user_id);
 void increase_balance(sqlite3* db);
 void transfer_to_user(sqlite3* db, int user_id);
 void display_user_transactions(sqlite3* db, int user_id);
+std::string normalize_name(const std::string& input);
 
 
 
@@ -169,6 +171,16 @@ public:
 
 
 
+
+std::string normalize_name(const std::string& input) {
+    if (input.empty()) return "";
+
+    std::string result = input;
+    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+    result[0] = std::toupper(result[0]);
+
+    return result;
+}
 
 void display_user_transactions(sqlite3* db, int user_id) {
     sqlite3_stmt* stmt;
@@ -457,9 +469,11 @@ void login_user(sqlite3* db) {
 
     std::cout << "Введите имя: ";
     std::cin >> first_name;
+    first_name = normalize_name(first_name);
 
     std::cout << "Введите фамилию: ";
     std::cin >> last_name;
+    last_name = normalize_name(last_name);
 
     std::cout << "Введите пароль: ";
     std::cin >> password;
@@ -580,13 +594,15 @@ void create_status(sqlite3* db) {
 
     std::string status;
     std::string choice;
-    while (choice != "1" && choice != "2" && choice != "3" && choice != "4") {
+
+    while (choice != "1" && choice != "2" && choice != "3" && choice != "4" && choice != "5") {
         system("cls");
         std::cout << "----- Статус пользователя -----" << std::endl;
         std::cout << "1 - deleted" << std::endl;
         std::cout << "2 - banned" << std::endl;
         std::cout << "3 - credited" << std::endl;
-        std::cout << "4 - Отмена" << std::endl;
+        std::cout << "4 - Очистить статус (null)" << std::endl;
+        std::cout << "5 - Отмена" << std::endl;
         std::cout << ">> ";
         std::cin >> choice;
 
@@ -600,17 +616,16 @@ void create_status(sqlite3* db) {
             status = "credited";
         }
         else if (choice == "4") {
-            status = nullptr;
+            status = "";
         }
         else if (choice == "5") {
             return;
         }
         else {
-            std::cout << "Неверный синтаксис, попробуйте еще раз." << std::endl;
+            std::cout << "Неверный выбор, попробуйте снова." << std::endl;
             system("pause");
         }
     }
-
 
     const char* updateStatusSQL = "UPDATE users SET status = ? WHERE id = ?;";
     sqlite3_stmt* stmt;
@@ -620,11 +635,18 @@ void create_status(sqlite3* db) {
         return;
     }
 
-    sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_STATIC);
+    if (status.empty()) {
+        sqlite3_bind_null(stmt, 1);
+    }
+    else {
+        sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_STATIC);
+    }
+
     sqlite3_bind_int(stmt, 2, id);
 
     if (sqlite3_step(stmt) == SQLITE_DONE) {
-        std::cout << "Статус пользователя с ID " << id << " успешно обновлён на \"" << status << "\".\n";
+        std::string displayStatus = status.empty() ? "NULL" : "\"" + status + "\"";
+        std::cout << "Статус пользователя с ID " << id << " успешно обновлён на " << displayStatus << ".\n";
     }
     else {
         std::cerr << "Ошибка при обновлении статуса: " << sqlite3_errmsg(db) << std::endl;
@@ -671,9 +693,11 @@ void register_user(sqlite3* db, bool money) {
 
     std::cout << "Введите имя пользователя: ";
     std::cin >> first_name;
+    first_name = normalize_name(first_name);
 
     std::cout << "Введите фамилию пользователя: ";
     std::cin >> last_name;
+    last_name = normalize_name(last_name);
 
     std::cout << "Введите пароль пользователя: ";
     std::cin >> password;
