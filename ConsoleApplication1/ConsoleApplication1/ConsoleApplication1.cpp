@@ -11,7 +11,7 @@ void menu(sqlite3* db);
 void admin_menu(sqlite3* db);
 void register_user(sqlite3* db, bool money);
 void input_user(sqlite3* db);
-void delete_user_by_id(sqlite3* db);
+void create_status(sqlite3* db);
 void login_user(sqlite3* db);
 void user_menu(sqlite3* db, int user_id);
 void show_balance(sqlite3* db, int user_id);
@@ -113,10 +113,11 @@ private:
     std::string last_name;
     std::string password;
     float cash;
+    std::string status;
 
 public:
-    User(const std::string& fname, const std::string& lname, const std::string& pwd, float money)
-        : first_name(fname), last_name(lname), password(pwd), cash(money) {}
+    User(const std::string& fname, const std::string& lname, const std::string& pwd, float money, const std::string& stat = "")
+        : first_name(fname), last_name(lname), password(pwd), cash(money), status(stat) {}
 
     static bool create_table(sqlite3* db) {
         const char* sqlCreateUsersTable =
@@ -125,7 +126,8 @@ public:
             "first_name TEXT NOT NULL,"
             "last_name TEXT NOT NULL,"
             "password TEXT NOT NULL,"
-            "cash FLOAT);";
+            "cash FLOAT,"
+            "status TEXT DEFAULT NULL);";
 
         char* errMsg = nullptr;
         int rc = sqlite3_exec(db, sqlCreateUsersTable, nullptr, nullptr, &errMsg);
@@ -430,7 +432,7 @@ void login_user(sqlite3* db) {
     std::cout << "Введите пароль: ";
     std::cin >> password;
 
-    const char* loginSQL = "SELECT id FROM users WHERE first_name = ? AND last_name = ? AND password = ?;";
+    const char* loginSQL = "SELECT id, status FROM users WHERE first_name = ? AND last_name = ? AND password = ?;";
     sqlite3_stmt* stmt;
 
     if (sqlite3_prepare_v2(db, loginSQL, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -444,16 +446,27 @@ void login_user(sqlite3* db) {
 
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         int user_id = sqlite3_column_int(stmt, 0);
-        std::cout << "Успешный вход! Добро пожаловать, " << first_name << "!" << std::endl;
-        sqlite3_finalize(stmt);
-        system("pause");
-        user_menu(db, user_id);
+        const unsigned char* status_text = sqlite3_column_text(stmt, 1);
+
+        if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "deleted") {
+            std::cout << "Вход невозможен: аккаунт помечен как удалённый.\n";
+        }
+        else if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "banned") {
+            std::cout << "Вход невозможен: аккаунт помечен как заблокированный.\n";
+        }
+        else {
+            std::cout << "Успешный вход! Добро пожаловать, " << first_name << "!" << std::endl;
+            sqlite3_finalize(stmt);
+            system("pause");
+            user_menu(db, user_id);
+            return;
+        }
     }
     else {
         std::cout << "Неверные данные! Попробуйте ещё раз." << std::endl;
-        sqlite3_finalize(stmt);
     }
 
+    sqlite3_finalize(stmt);
     system("pause");
 }
 
@@ -511,51 +524,61 @@ void increase_balance(sqlite3* db) {
     }
 }
 
-void delete_user_by_id(sqlite3* db) {
+void create_status(sqlite3* db) {
     int id;
-    std::cout << "Введите ID пользователя, которого хотите удалить: ";
+    std::cout << "Введите ID пользователя, которому хотите добавить статус: ";
     std::cin >> id;
 
-    std::string deleteSQL = "DELETE FROM users WHERE id = ?;";
-    sqlite3_stmt* deleteStmt;
-    if (sqlite3_prepare_v2(db, deleteSQL.c_str(), -1, &deleteStmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(deleteStmt, 1, id);
-        if (sqlite3_step(deleteStmt) == SQLITE_DONE) {
-            std::cout << "Пользователь с ID " << id << " успешно удалён.\n";
+    std::string status;
+    std::string choice;
+    while (true) {
+        system("cls");
+        std::cout << "----- Меню пользователя -----" << std::endl;
+        std::cout << "1 - deleted" << std::endl;
+        std::cout << "2 - banned" << std::endl;
+        std::cout << "3 - credited" << std::endl;
+        std::cout << "4 - Отмена" << std::endl;
+        std::cout << ">> ";
+        std::cin >> choice;
+
+        if (choice == "1") {
+            status = "deleted";
+        }
+        else if (choice == "2") {
+            status = "banned";
+        }
+        else if (choice == "3") {
+            status = "credited";
+        }
+        else if (choice == "4") {
+            return;
         }
         else {
-            std::cerr << "Ошибка при удалении пользователя: " << sqlite3_errmsg(db) << std::endl;
+            std::cout << "Неверный синтаксис, попробуйте еще раз." << std::endl;
+            system("pause");
         }
-        sqlite3_finalize(deleteStmt);
     }
-    else {
+
+
+    const char* updateStatusSQL = "UPDATE users SET status = ? WHERE id = ?;";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, updateStatusSQL, -1, &stmt, nullptr) != SQLITE_OK) {
         std::cerr << "Ошибка подготовки запроса: " << sqlite3_errmsg(db) << std::endl;
         return;
     }
 
-    const char* reindexSQL =
-        "BEGIN TRANSACTION; "
-        "CREATE TABLE IF NOT EXISTS users_temp ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "first_name TEXT NOT NULL, "
-        "last_name TEXT NOT NULL, "
-        "password TEXT NOT NULL, "
-        "cash FLOAT); "
-        "INSERT INTO users_temp (first_name, last_name, password, cash) "
-        "SELECT first_name, last_name, password, cash FROM users; "
-        "DROP TABLE users; "
-        "ALTER TABLE users_temp RENAME TO users; "
-        "COMMIT;";
+    sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, id);
 
-    char* errMsg = nullptr;
-    int rc = sqlite3_exec(db, reindexSQL, nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK) {
-        std::cerr << "Ошибка при пересоздании таблицы: " << errMsg << std::endl;
-        sqlite3_free(errMsg);
+    if (sqlite3_step(stmt) == SQLITE_DONE) {
+        std::cout << "Статус пользователя с ID " << id << " успешно обновлён на \"" << status << "\".\n";
     }
     else {
-        std::cout << "ID переиндексированы.\n";
+        std::cerr << "Ошибка при обновлении статуса: " << sqlite3_errmsg(db) << std::endl;
     }
+
+    sqlite3_finalize(stmt);
 }
 
 void input_user(sqlite3* db) {
@@ -626,13 +649,13 @@ void admin_menu(sqlite3* db) {
     std::string y;
     do {
         system("cls");
-        std::cout << "-----------------меню администратора-----------------" << std::endl;
-        std::cout << "0 - создать пользователя" << std::endl;
-        std::cout << "1 - увеличение баланса" << std::endl;
-        std::cout << "2 - удаление пользователя" << std::endl;
-        std::cout << "3 - вывод всех пользователей" << std::endl;
+        std::cout << "-----------------Меню администратора-----------------" << std::endl;
+        std::cout << "0 - Создать пользователя" << std::endl;
+        std::cout << "1 - Увеличение баланса" << std::endl;
+        std::cout << "2 - Добавление статуса пользователю" << std::endl;
+        std::cout << "3 - Вывод всех пользователей" << std::endl;
         std::cout << "4 - Просмотреть все транзакции" << std::endl;
-        std::cout << "5 - назад" << std::endl;
+        std::cout << "5 - Назад" << std::endl;
         std::cout << ">> ";
         std::cin >> y;
 
@@ -645,7 +668,7 @@ void admin_menu(sqlite3* db) {
         }
         else if (y == "2") {
             input_user(db);
-            delete_user_by_id(db);
+            create_status(db);
         }
         else if (y == "3") {
             input_user(db);
