@@ -4,6 +4,9 @@
 #include <string>
 #include <windows.h>
 #include <algorithm>
+#include <openssl/sha.h>
+#include <sstream>
+#include <iomanip>
 
 
 
@@ -21,6 +24,7 @@ void increase_balance(sqlite3* db);
 void transfer_to_user(sqlite3* db, int user_id);
 void display_user_transactions(sqlite3* db, int user_id);
 std::string normalize_name(const std::string& input);
+std::string hash_password(const std::string& password);
 
 
 
@@ -171,6 +175,18 @@ public:
 
 
 
+
+std::string hash_password(const std::string& password) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(password.c_str()), password.size(), hash);
+
+    std::stringstream ss;
+    for (unsigned char c : hash) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)c;
+    }
+
+    return ss.str();
+}
 
 std::string normalize_name(const std::string& input) {
     if (input.empty()) return "";
@@ -477,6 +493,7 @@ void login_user(sqlite3* db) {
 
     std::cout << "Введите пароль: ";
     std::cin >> password;
+    std::string hashed_password = hash_password(password);
 
     const char* loginSQL = "SELECT id, status FROM users WHERE first_name = ? AND last_name = ? AND password = ?;";
     sqlite3_stmt* stmt;
@@ -488,7 +505,7 @@ void login_user(sqlite3* db) {
 
     sqlite3_bind_text(stmt, 1, first_name.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, last_name.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, password.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, hashed_password.c_str(), -1, SQLITE_STATIC);
 
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         int user_id = sqlite3_column_int(stmt, 0);
@@ -709,7 +726,8 @@ void register_user(sqlite3* db, bool money) {
     else
         cash = 0;
 
-    User newUser(first_name, last_name, password, cash);
+    std::string hashed_password = hash_password(password);
+    User newUser(first_name, last_name, hashed_password, cash);
 
     if (newUser.saveToDB(db)) {
         std::cout << "Пользователь успешно добавлен." << std::endl;
@@ -776,12 +794,17 @@ void menu(sqlite3* db) {
         std::cin >> y;
 
         if (y == "0") {
-            std::cout << std::endl << "Введите пароль >> ";
+            std::string admin_pass;
+            std::cout << "Введите пароль >> ";
             std::cin >> y;
-            if (y=="123321456654")
+
+            std::string hash = hash_password(y);
+            std::string correct_hash = "8174a05d4e26d063122d119197d3d157b486fb810746504acead103820e36e61";
+
+            if (hash == correct_hash)
                 admin_menu(db);
             else
-                std::cout << std::endl << "Нет прав";
+                std::cout << "Нет прав\n";
         }
         else if (y == "1") {
             register_user(db, false);
