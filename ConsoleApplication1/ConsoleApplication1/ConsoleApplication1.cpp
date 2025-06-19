@@ -340,12 +340,27 @@ void transfer_to_user(sqlite3* db, int user_id) {
     int recipient_id = -1;
     double recipient_balance = 0.0;
     sqlite3_stmt* stmt_recipient;
-    const char* find_recipient_sql = "SELECT id, cash FROM users WHERE first_name = ? AND last_name = ?;";
+    const char* find_recipient_sql = "SELECT id, cash, status FROM users WHERE first_name = ? AND last_name = ?;";
     if (sqlite3_prepare_v2(db, find_recipient_sql, -1, &stmt_recipient, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt_recipient, 1, recipient_first_name.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt_recipient, 2, recipient_last_name.c_str(), -1, SQLITE_STATIC);
 
         if (sqlite3_step(stmt_recipient) == SQLITE_ROW) {
+            const unsigned char* status_text = sqlite3_column_text(stmt_recipient, 2);
+            if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "deleted") {
+                std::cout << "Нельзя перевести деньги: пользователь помечен как удалённый.\n";
+                sqlite3_finalize(stmt_recipient);
+                system("pause");
+                return;
+            }
+
+            if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "banned") {
+                std::cout << "Нельзя перевести деньги: пользователь помечен как заблокированный.\n";
+                sqlite3_finalize(stmt_recipient);
+                system("pause");
+                return;
+            }
+
             recipient_id = sqlite3_column_int(stmt_recipient, 0);
             recipient_balance = sqlite3_column_double(stmt_recipient, 1);
         }
@@ -408,7 +423,24 @@ void user_menu(sqlite3* db, int user_id) {
             deposit_balance(db, user_id);
         }
         else if (choice == "3") {
-            transfer_to_user(db, user_id);
+            const char* statusSQL = "SELECT status FROM users WHERE id = ?;";
+            sqlite3_stmt* stmt;
+            if (sqlite3_prepare_v2(db, statusSQL, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int(stmt, 1, user_id);
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    const unsigned char* status_text = sqlite3_column_text(stmt, 0);
+                    std::string status = (status_text != nullptr) ? reinterpret_cast<const char*>(status_text) : "";
+
+                    if (status == "deleted" || status == "credited") {
+                        std::cout << "Вы не можете совершать переводы. У вас задолженость.\n";
+                        system("pause");
+                    }
+                    else {
+                        transfer_to_user(db, user_id);
+                    }
+                }
+                sqlite3_finalize(stmt);
+            }
         }
         else if (choice == "4") {
             display_user_transactions(db, user_id);
@@ -450,9 +482,11 @@ void login_user(sqlite3* db) {
 
         if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "deleted") {
             std::cout << "Вход невозможен: аккаунт помечен как удалённый.\n";
+            return;
         }
-        else if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "banned") {
+        if (status_text != nullptr && std::string(reinterpret_cast<const char*>(status_text)) == "banned") {
             std::cout << "Вход невозможен: аккаунт помечен как заблокированный.\n";
+            return;
         }
         else {
             std::cout << "Успешный вход! Добро пожаловать, " << first_name << "!" << std::endl;
@@ -476,11 +510,11 @@ void increase_balance(sqlite3* db) {
 
     std::cout << "Введите ID пользователя, которому хотите увеличить баланс: ";
     std::cin >> user_id;
-  
+
     std::cout << "Введите сумму увеличения: ";
     std::cin >> amount;
 
-    const char* checkSQL = "SELECT cash FROM users WHERE id = ?;";
+    const char* checkSQL = "SELECT cash, status FROM users WHERE id = ?;";
     sqlite3_stmt* checkStmt;
 
     if (sqlite3_prepare_v2(db, checkSQL, -1, &checkStmt, nullptr) != SQLITE_OK) {
@@ -492,7 +526,22 @@ void increase_balance(sqlite3* db) {
 
     if (sqlite3_step(checkStmt) == SQLITE_ROW) {
         double current_cash = sqlite3_column_double(checkStmt, 0);
+        const unsigned char* status_text = sqlite3_column_text(checkStmt, 1);
+        std::string status = (status_text != nullptr) ? reinterpret_cast<const char*>(status_text) : "";
+
         sqlite3_finalize(checkStmt);
+
+        if (status == "deleted") {
+            std::cout << "Невозможно изменить баланс — пользователь удалён.\n";
+            system("pause");
+            return;
+        }
+
+        if (status == "banned") {
+            std::cout << "Невозможно изменить баланс — пользователь удалён.\n";
+            system("pause");
+            return;
+        }
 
         double new_cash = current_cash + amount;
 
@@ -531,9 +580,9 @@ void create_status(sqlite3* db) {
 
     std::string status;
     std::string choice;
-    while (true) {
+    while (choice != "1" && choice != "2" && choice != "3" && choice != "4") {
         system("cls");
-        std::cout << "----- Меню пользователя -----" << std::endl;
+        std::cout << "----- Статус пользователя -----" << std::endl;
         std::cout << "1 - deleted" << std::endl;
         std::cout << "2 - banned" << std::endl;
         std::cout << "3 - credited" << std::endl;
@@ -551,6 +600,9 @@ void create_status(sqlite3* db) {
             status = "credited";
         }
         else if (choice == "4") {
+            status = nullptr;
+        }
+        else if (choice == "5") {
             return;
         }
         else {
@@ -582,7 +634,7 @@ void create_status(sqlite3* db) {
 }
 
 void input_user(sqlite3* db) {
-    const char* selectSQL = "SELECT id, first_name, last_name, password, cash FROM users;";
+    const char* selectSQL = "SELECT id, first_name, last_name, password, cash, status FROM users;";
     sqlite3_stmt* stmt;
 
     if (sqlite3_prepare_v2(db, selectSQL, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -590,18 +642,20 @@ void input_user(sqlite3* db) {
         std::cout << "------------------------\n";
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             int id = sqlite3_column_int(stmt, 0);
-
             std::string f_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
             std::string l_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
             std::string passw = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-
             double user_cash = sqlite3_column_double(stmt, 4);
+
+            const unsigned char* status_text = sqlite3_column_text(stmt, 5);
+            std::string status = (status_text != nullptr) ? reinterpret_cast<const char*>(status_text) : "NULL";
 
             std::cout << "ID: " << id
                 << " | Имя: " << f_name
                 << " | Фамилия: " << l_name
                 << " | Пароль: " << passw
-                << " | Баланс: " << user_cash << " руб." << std::endl;
+                << " | Баланс: " << user_cash << " руб."
+                << " | Статус: " << status << std::endl;
         }
         std::cout << "------------------------" << std::endl;
         sqlite3_finalize(stmt);
@@ -743,7 +797,15 @@ int main() {
         return 1;
     }
 
-    // Запуск меню
+    const char* alterSQL = "ALTER TABLE users ADD COLUMN status TEXT DEFAULT NULL;";
+    char* errMsg = nullptr;
+    if (sqlite3_exec(db, alterSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        // Игнорируем ошибку, если колонка уже есть
+        if (std::string(errMsg).find("duplicate column name") == std::string::npos) {
+            std::cerr << "Ошибка при добавлении столбца status: " << errMsg << std::endl;
+        }
+        sqlite3_free(errMsg);
+    }
     menu(db);
 
     sqlite3_close(db);
